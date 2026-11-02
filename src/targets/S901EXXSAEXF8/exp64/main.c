@@ -43,7 +43,11 @@ FILE *g_logfile = NULL;
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-#define WAITER_WAIT_SEC     5
+/* EXF8: the requeue path deadlocks immediately; the waiter only needs the
+ * timeout to escape pi_target.  1 s (instead of 5 s) is still >> the 200 ms
+ * the main thread waits before CMP_REQUEUE_PI, and cuts every race attempt
+ * by 4 s — the dominant cost when several attempts are needed. */
+#define WAITER_WAIT_SEC     1
 /* The consumer fires with no settle delay by default
  * (exp64_CONSUMER_DELAY_US overrides) — see consumer_thread. */
 #define WAITER_RT_PRIO      99

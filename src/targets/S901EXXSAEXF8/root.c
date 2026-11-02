@@ -477,22 +477,9 @@ int install_android_root(int fd) {
   if (!install_workqueue_umh_root(fd)) {
     return 0;
   }
-  root_uid_after = getuid();
-  pr_success("root cred escalated uid=%u euid=%u\n", getuid(), geteuid());
-  if (root_uid_after != 0) {
-    return 0;
-  }
-
-  spawn_root_daemon();
-  int socket_ok = 0;
-  for (int i = 0; i < 200; i++) {
-    if (root_socket_ready()) {
-      socket_ok = 1;
-      break;
-    }
-    usleep(10000);
-  }
-  pr_info("root daemon socket=%d\n", socket_ok);
-  root_child_done = socket_ok;
-  return socket_ok;
+  /* Root lives in the kworker-spawned helper/daemon, not in this process;
+   * install_workqueue_umh_root() already waited for its socket. */
+  root_uid_after = 0;
+  root_child_done = 1;
+  return 1;
 }

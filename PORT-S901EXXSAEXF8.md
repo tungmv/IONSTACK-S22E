@@ -206,6 +206,34 @@ The queued work struct lives at `page_base + ROOT_UMH_WORK_OFF` (the reclaimed
 order-3 page that already holds the fake fops), with the `subprocess_info`
 pointing at the helper path.
 
+## Performance (time-to-root)
+
+Cold boot, screen on, `EXPLOIT_ATTEMPTS=4`, measured wall-clock from
+`adb shell` launch to the root socket answering:
+
+| Build | Time | Notes |
+| :--- | :--- | :--- |
+| first working port | 98-100 s | 64 GB scan, 5 s waiter timeout, post-install loop |
+| current | **18 s** (18 s, 18 s on two cold boots) | 1 CFI stage, 1 attempt |
+
+Three changes account for it:
+
+1. **Two-phase Kernelsnitch scan** (`src/kernelsnitch/kernelsnitch.h`).
+   The 64 GB identity range is split into an 8 GB low window and the rest:
+   `mm_struct` normally lives in the low RAM bank, so the common case scans
+   1/8 of the address space. The high range is only scanned on a miss, which
+   is still needed for the pipe stage on this device. Override the window with
+   `KSNITCH_LOW_WINDOW=<bytes>`.
+2. **`install_android_root()` returned 0 after the umh had already succeeded.**
+   A leftover cred-escalation check (`getuid() != 0`) rejected the success
+   path, so the CFI thread looped for ~90 s, spawning a fresh root daemon on
+   every iteration. It now returns 1 as soon as the umh helper answers.
+3. **`WAITER_WAIT_SEC` 5 -> 1** (`exp64/main.c`). The waiter's only job for
+   that timeout is to escape `pi_target` after the deadlock rollback; 1 s is
+   still 5x the 200 ms the main thread waits before `CMP_REQUEUE_PI`, and it
+   removes 4 s from every race attempt (the dominant cost when a race fails
+   and has to be retried).
+
 ## Caveats
 
 - **Volatile root only.** Reboot removes root and the SELinux change; re-run the

