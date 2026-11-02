@@ -136,6 +136,17 @@ API64 ?= $(API)
 NDK_CC64 := $(NDK_TOOLCHAIN)/bin/aarch64-linux-android$(API64)-clang$(NDK_EXE)
 HOST_CC64 ?= aarch64-linux-android$(API64)-clang
 
+# Some targets' kernels crash a self-relocating static PIE before main
+# (SIGSEGV, empty crash buffer), so exp64 can be linked as a plain static
+# executable by dropping a `no-static-pie` marker in the target directory.
+ifneq ($(wildcard $(TARGET_DIR)/no-static-pie),)
+  EXP64_CFLAGS := -fno-pie
+  EXP64_LDFLAGS := -static -no-pie
+else
+  EXP64_CFLAGS := -fPIE
+  EXP64_LDFLAGS := -static-pie
+endif
+
 ifneq ($(and $(USE_BUILDROOT),$(wildcard $(BUILDROOT_CC))),)
   EXP_CC := $(BUILDROOT_CC)
   EXP_CFLAGS := --sysroot=$(BUILDROOT_SYSROOT) -O2 -g0 -Wall -Isrc -I$(TARGET_DIR) -pthread \
@@ -143,13 +154,13 @@ ifneq ($(and $(USE_BUILDROOT),$(wildcard $(BUILDROOT_CC))),)
   EXP_LDFLAGS := -static -pthread
 else ifeq ($(shell command -v $(HOST_CC64) >/dev/null 2>&1 && echo yes),yes)
   EXP_CC := $(HOST_CC64)
-  EXP_CFLAGS := -O2 -g0 -Wall -Isrc -I$(TARGET_DIR) -static-pie -pthread
-  EXP_LDFLAGS := -static-pie -pthread
+  EXP_CFLAGS := -O2 -g0 -Wall -Isrc -I$(TARGET_DIR) $(EXP64_CFLAGS) -pthread
+  EXP_LDFLAGS := $(EXP64_LDFLAGS) -pthread
 else ifneq ($(wildcard $(NDK_CC64)),)
   EXP_CC := $(NDK_CC64)
-  EXP_CFLAGS := -O2 -g0 -Wall -Isrc -I$(TARGET_DIR) -fPIE -pthread \
+  EXP_CFLAGS := -O2 -g0 -Wall -Isrc -I$(TARGET_DIR) $(EXP64_CFLAGS) -pthread \
     -Wno-unused-parameter -Wno-unused-function
-  EXP_LDFLAGS := -static-pie -pthread
+  EXP_LDFLAGS := $(EXP64_LDFLAGS) -pthread
 else
   $(error no 64-bit ARM toolchain: install aarch64-linux-android-gcc or an NDK)
 endif

@@ -208,7 +208,12 @@ def h(val: int) -> str:
 # ---------------------------------------------------------------------------
 def compute_values(symbols: dict[str, int], config: dict[str, str], img: ImageReader) -> dict[str, str]:
     """Return {MACRO_NAME: replacement_line} for every define we extract."""
-    text_base = lookup(symbols, "_text")
+    # Samsung kernels don't export _text. The image base is where pe_header sits
+    # minus 0x40 (PE header offset), which equals KIMAGE_TEXT_BASE 0xffffffc008000000.
+    try:
+        text_base = lookup(symbols, "_text")
+    except KeyError:
+        text_base = 0xffffffc008000000
 
     va_bits = int(config.get("ARM64_VA_BITS", "39"))
     page_offset = (-1 << va_bits) & 0xFFFFFFFFFFFFFFFF
@@ -395,7 +400,14 @@ def main():
     config = parse_config(config_path)
     print(f"Parsed {len(config)} configs from {config_path}")
 
-    text_base = lookup(symbols, "_text")
+    # Samsung kernels export _stext instead of _text. _stext sits 0x10000 into
+    # the image, so using it as text_base would shift all offsets. Use the real
+    # image base (KIMAGE_TEXT_BASE) instead.
+    try:
+        text_base = lookup(symbols, "_text")
+    except KeyError:
+        text_base = 0xffffffc008000000
+        print("[*] _text not found, using KIMAGE_TEXT_BASE 0xffffffc008000000")
     img = ImageReader(image_path, text_base, symbols)
     print(f"Image text_base=0x{h(text_base)}")
 

